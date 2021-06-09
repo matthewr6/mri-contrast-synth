@@ -16,16 +16,16 @@ def samseg_stats_to_dict(path):
     return ret
 
 subjs = glob.glob('/data/mradovan/7T_WMn_3T_CSFn_pairs/*')
-# original_path = 'samseg'
-# predicted_path = 'samseg_predicted'
-original_path = 'samseg_wmn'
-predicted_path = 'samseg_warped'
+original_path = 'CSFn'
+predicted_path = 'CSFnSB_wmn_invwarped'
 
 struct_vol_diffs = collections.defaultdict(list)
 
 for subj_path in subjs:
-    original_vols = samseg_stats_to_dict(os.path.join(subj_path, original_path))
-    predicted_vols = samseg_stats_to_dict(os.path.join(subj_path, predicted_path))
+    if not os.path.exists(os.path.join(subj_path, 'samseg', predicted_path)):
+        continue
+    original_vols = samseg_stats_to_dict(os.path.join(subj_path, 'samseg', original_path))
+    predicted_vols = samseg_stats_to_dict(os.path.join(subj_path, 'samseg', predicted_path))
     for structure in original_vols:
         diff = predicted_vols[structure] - original_vols[structure]
         proportional_diff = diff / original_vols[structure]
@@ -35,7 +35,6 @@ longest = 'Right-Cerebellum-White-Matter'
 
 structures = sorted(struct_vol_diffs.keys())
 
-# for structure, diffs in struct_vol_diffs.items():
 for structure in structures:
     diffs = struct_vol_diffs[structure]
     padding = ' ' * (len(longest) - len(structure))

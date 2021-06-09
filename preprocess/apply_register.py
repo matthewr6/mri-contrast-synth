@@ -9,20 +9,27 @@ all_paths = [
     glob.glob('/data/mradovan/7T_WMn_3T_CSFn_pairs/*'),
 ]
 
-for paths in all_paths:
-    processes = []
-    running = 0
-    process_batch_size = 4
-    for subj_path in paths:
-        processes.append(
-            subprocess.Popen('cd {} && ~/research/wmn_to_csfn/register.sh'.format(subj_path), shell=True)
-        )
-        running += 1
-        if running >= process_batch_size:
-            running = 0
-            for p in processes:
-                p.wait()
-            processes = []
+register_commands = [
+    # 'register.sh',
+    # 'register_stripped.sh',
+    'register_stripped_csfn_only.sh',
+]
 
-    for p in processes:
-        p.wait()
+for paths in all_paths:
+    for register_command in register_commands:
+        processes = []
+        running = 0
+        process_batch_size = 2
+        for subj_path in paths:
+            processes.append(
+                subprocess.Popen('cd {} && ~/research/wmn_to_csfn/preprocess/{}'.format(subj_path, register_command), shell=True)
+            )
+            running += 1
+            if running >= process_batch_size:
+                running = 0
+                for p in processes:
+                    p.wait()
+                processes = []
+
+        for p in processes:
+            p.wait()

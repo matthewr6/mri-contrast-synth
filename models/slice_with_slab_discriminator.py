@@ -1,5 +1,5 @@
 from datetime import datetime
-import os
+
 import tensorflow as tf
 import nibabel as nib
 import numpy as np
@@ -40,14 +40,14 @@ from tensorflow.keras import losses
 from tensorflow.keras.models import load_model
 import tensorflow.keras.backend as K
 
-from models.layers import CBR_2D
+from models.layers import CBR, CBR_2D
 
-class SliceDiscriminator():
+class SliceWithSlabDiscriminator():
     
-    def __init__(self, name='model', load=False, lr=0.001):
+    def __init__(self, name='slice_with_slab_discriminator', load=False, lr=0.001):
         self.name = name
         self.model = None
-        self.input_shape = (256, 256, 1)
+        self.input_shapes = ((256, 256, 5, 1), (256, 256, 1))
         self.lr = lr
         if load:
             self.model = load_model(self.name, compile=False)
@@ -56,9 +56,16 @@ class SliceDiscriminator():
         self.compile()
 
     def build(self):
-        wmn_input = Input(shape=self.input_shape)
+        slab_input = Input(shape=self.input_shapes[0])
+        slice_input = Input(shape=self.input_shapes[1])
 
-        block_A = CBR_2D(wmn_input, 16, (3, 3), padding='valid')
+        slab_path = CBR(slab_input, 32, (1, 1, 5), padding='valid')
+        slab_path = CBR(slab_path, 1, (1, 1, 1), padding='valid')
+        slab_path = Reshape(self.input_shapes[1])(slab_path)
+
+        combined = Concatenate(axis=2)([slice_input, slab_path])
+
+        block_A = CBR_2D(combined, 16, (3, 3), padding='valid')
         block_A = CBR_2D(block_A, 32, (3, 3), padding='valid')
 
         block_B = MaxPooling2D(pool_size=(2, 2))(block_A)
@@ -78,7 +85,7 @@ class SliceDiscriminator():
         fc = Dense(256, activation='relu')(fc)
         discrim_output = Dense(1, activation='sigmoid')(fc)
         self.output_name = discrim_output.name.split('/')[0]
-        self.model = keras.Model(inputs=[wmn_input], outputs=[discrim_output], name='network')
+        self.model = keras.Model(inputs=[slab_input, slice_input], outputs=[discrim_output], name='network')
 
     def compile(self):
         optimizer = Adam(learning_rate=self.lr)
@@ -120,8 +127,8 @@ class SliceDiscriminator():
 
         last_time = start_time
         for epoch in range(epochs):
-            for X, y in tqdm(generator(), total=batches_per_epoch):
-                loss, acc = self.model.train_on_batch(X, y)
+            for X_slab, X_slice, y, weights in tqdm(generator(), total=batches_per_epoch):
+                loss, acc = self.model.train_on_batch([X_slab, X_slice], y)#, sample_weight=weights)
 
             now = datetime.now()
 
@@ -149,4 +156,4 @@ class SliceDiscriminator():
                 plt.clf()
 
 if __name__ == '__main__':
-    model = Generator()
+    model = SliceWithSlabDiscriminator()

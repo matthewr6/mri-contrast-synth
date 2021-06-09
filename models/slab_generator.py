@@ -36,7 +36,7 @@ from tensorflow.keras import losses
 from tensorflow.keras.models import load_model
 import tensorflow.keras.backend as K
 
-from datagen import normalize
+from data.datagen import normalize
 from models.layers import CBR
 # from models.util import feature_extractor, vgg16_feature_extractor
 

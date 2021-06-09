@@ -27,8 +27,13 @@ from tensorflow.keras.layers import (
 from tensorflow.keras.models import load_model
 
 def build_feature_extractor():
-    model = load_model('saved_models/discriminator')
-    return keras.Model(inputs=model.layers[0].input, outputs=model.layers[-4].output)
+    return
+    # model = load_model('saved_models/discriminator')
+    # flattened final features
+    # return keras.Model(inputs=model.layers[0].input, outputs=model.layers[-4].output)
+
+    # after 2 conv / maxpol / 2 conv / max pool / 1 conv
+    # return keras.Model(inputs=model.layers[0].input, outputs=model.layers[15].output)
 
 def build_vgg16_feature_extractor():
     vgg16_input = Input(shape=(256, 256, 3))
@@ -37,3 +42,7 @@ def build_vgg16_feature_extractor():
 
 feature_extractor = build_feature_extractor()
 vgg16_feature_extractor = build_vgg16_feature_extractor()
+
+if __name__ == '__main__':
+    vgg16_feature_extractor.summary()
+    feature_extractor.summary()

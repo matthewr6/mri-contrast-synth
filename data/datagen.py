@@ -12,10 +12,18 @@ import math
 slices_per_slab = 5
 slices_per_volume = 440
 
-wmn_format = '{}/WMn.nii.gz'
-csfn_format = '{}/CSFn_registered.nii.gz'
-# wmn_format = '{}/WMn_stripped.nii.gz'
-# csfn_format = '{}/CSFn_stripped_registered.nii.gz'
+input_modes = {
+    'full': ('{}/WMn.nii.gz', '{}/CSFn_registered.nii.gz'),
+    'stripped_wmn': ('{}/WMnB.nii.gz', '{}/CSFnB_registered_wmn.nii.gz'),
+    'stripped_csfns': ('{}/WMnB.nii.gz', '{}/CSFnB_registered_csfns.nii.gz'),
+}
+
+wmn_format, csfn_format = input_modes['full']
+
+def set_formats(input_mode):
+    global wmn_format
+    global csfn_format
+    wmn_format, csfn_format = input_modes[input_mode]
 
 def find_identifiers(path):
     files = [p for p in glob.glob(path + '/*')]
@@ -164,7 +172,79 @@ def corrupted_with_wmn_generator(base_path, batch_size=1, n_volumes=10):
             yield np.array(X), np.array(y)
     return generator, batches_per_epoch
 
-def paired_generator(base_path, batch_size=1, n_volumes=10):
+def paired_with_corruption_generator(base_path, batch_size=1, n_volumes=10):
+    identifiers = find_identifiers(base_path)[:n_volumes]
+    def build_vol_paths(identifier):
+        return [
+            base_path + '/' + wmn_format.format(identifier),
+            base_path + '/' + csfn_format.format(identifier)
+        ]
+    preload_volumes(identifiers, build_vol_paths, vols_per_id=2)
+    identifier_slice_pairs = [(identifier, slice_idx) for identifier in identifiers for slice_idx in range(get_shape(base_path, identifier)[1] - 4)]
+    random.shuffle(identifier_slice_pairs)
+    N = len(identifier_slice_pairs)
+    batches_per_epoch = math.ceil(N / batch_size)
+
+    def generator():
+        i = 0
+        while i < N:
+            X_slab = []
+            X_slice = []
+            y = []
+            sample_weights = []
+            next_batch_size = min(batch_size, N - i)
+            for _ in range(next_batch_size):
+                identifier = identifier_slice_pairs[i][0]
+                slice_idx = identifier_slice_pairs[i][1]
+
+                wmn_path = base_path + '/' + wmn_format.format(identifier)
+                csfn_path = base_path + '/' + csfn_format.format(identifier)
+
+                wmn = load_nifti(wmn_path)
+                csfn = load_nifti(csfn_path)
+
+                wmn_slab = np.zeros((256, 5, 256))
+                csfn_slab = np.zeros((256, 5, 256))
+
+                wmn_slab = wmn[:, slice_idx:slice_idx + slices_per_slab, :]
+                csfn_slab = csfn[:, slice_idx:slice_idx + slices_per_slab, :]
+
+                wmn_slab = np.rollaxis(wmn_slab, 2)
+                csfn_slab = np.rollaxis(csfn_slab, 2)
+
+                slab = wmn_slab[:, :, :, None]
+                csfn_slice = csfn_slab[:, :, 2, None]
+                corrupted_csfn_slice = corrupt_by_scramble(csfn_slab[:, :, 2])[:, :, None]
+                random_csfn_slice = np.transpose(csfn[:, np.random.randint(csfn.shape[1]), :])[:, :, None]
+                wmn_slice = wmn_slab[:, :, 2, None]
+
+                X_slab.append(slab)
+                X_slice.append(csfn_slice)
+                y.append(1)
+
+                X_slab.append(slab)
+                X_slice.append(corrupted_csfn_slice)
+                y.append(0)
+
+                X_slab.append(slab)
+                X_slice.append(random_csfn_slice)
+                y.append(0)
+
+                X_slab.append(slab)
+                X_slice.append(wmn_slice)
+                y.append(0)
+
+                sample_weights += [3, 1, 1, 1]
+
+                i += 1
+
+            yield np.array(X_slab), np.array(X_slice), np.array(y), np.array(sample_weights)
+
+    return generator, batches_per_epoch
+
+def paired_generator(base_path, batch_size=1, n_volumes=10, inverse=False, identity=None):
+    assert identity in [None, 'csfn', 'wmn']
+
     identifiers = find_identifiers(base_path)[:n_volumes]
     def build_vol_paths(identifier):
         return [
@@ -202,9 +282,30 @@ def paired_generator(base_path, batch_size=1, n_volumes=10):
                 wmn_slab = np.rollaxis(wmn_slab, 2)
                 csfn_slab = np.rollaxis(csfn_slab, 2)
 
-                X.append(wmn_slab[:, :, :, None])
-                y.append(csfn_slab[:, :, 2, None])
+                X_ = None
+                y_ = None
 
+                if identity is None:
+                    if inverse:
+                        X_ = csfn_slab[:, :, :, None]
+                        y_ = wmn_slab[:, :, 2, None]
+                    else:
+                        X_ = wmn_slab[:, :, :, None]
+                        y_ = csfn_slab[:, :, 2, None]
+                elif identity == 'csfn':
+                    X_ = csfn_slab[:, :, :, None]
+                    y_ = csfn_slab[:, :, 2, None]
+                elif identity == 'wmn':
+                    X_ = wmn_slab[:, :, :, None]
+                    y_ = wmn_slab[:, :, 2, None]
+
+                # if y_.sum() == 0:
+                #     i += 1
+                #     continue
+
+                X.append(X_)
+                y.append(y_)
+                    
                 i += 1
                 
             yield np.array(X), np.array(y)

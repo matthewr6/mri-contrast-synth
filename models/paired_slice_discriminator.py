@@ -1,5 +1,5 @@
 from datetime import datetime
-import os
+
 import tensorflow as tf
 import nibabel as nib
 import numpy as np
@@ -145,8 +145,5 @@ class SliceDiscriminator():
                 plt.xlabel('Epochs')
                 plt.ylabel(name)
                 plt.legend()
-                plt.savefig('training_graphs/discriminator/{}_{}_history.png'.format(self.name, name))
+                plt.savefig('discriminator_training_graphs/{}_{}_history.png'.format(self.name, name))
                 plt.clf()
-
-if __name__ == '__main__':
-    model = Generator()

@@ -38,20 +38,21 @@ from tensorflow.keras.models import load_model
 import tensorflow.keras.backend as K
 
 from data.datagen import normalize
+from data.seg_datagen import n_structures, invert_corrected_ids
 from models.layers import CBR
-from models.util import feature_extractor, vgg16_feature_extractor
 
-class SliceGenerator():
+# maxs out at around 35 epochs
+class SliceSegGenerator():
     
-    def __init__(self, name='model', load=False, continue_from=False, vgg_perceptual_loss=False, perceptual_loss=False, lr=0.001):
+    def __init__(self, name='model', load=False, continue_from=False, lr=0.0001):
         self.name = name
         self.model = None
         self.input_shape = (256, 256, 5, 1)
-        self.use_perceptual_loss = perceptual_loss
-        self.vgg_perceptual_loss = vgg_perceptual_loss
         self.dropout_rate = 0.1
         self.lr = lr
-        self.vgg16_loss_scale = 10 # 1
+        self.num_classes = n_structures + 1
+        self.weights = None
+        self.true_output_model = None
         if load or continue_from:
             if continue_from:
                 self.model = load_model(continue_from, compile=False)
@@ -87,78 +88,52 @@ class SliceGenerator():
         block_E = CBR(block_E, 32, (3, 3, 3))
         block_E = CBR(block_E, 32, (3, 3, 3))
 
-        block_E = Conv3D(filters=32, kernel_size=(1, 1, 5))(block_E) # modify how we combine slab slices
-        csfn_output = Conv3D(filters=1, kernel_size=(1, 1, 1))(block_E)
-        csfn_output = Reshape((256, 256, 1))(csfn_output)
-        csfn_output = ReLU()(csfn_output)
+        block_E = Conv3D(filters=32, kernel_size=(1, 1, 5))(block_E)
+        csfn_output = Conv3D(filters=self.num_classes, kernel_size=(1, 1, 1), activation='softmax')(block_E)
+        csfn_output = Reshape((256, 256, self.num_classes))(csfn_output)
+        csfn_output = Reshape((256 * 256, self.num_classes))(csfn_output)
             
         self.csfn_output_name = csfn_output.name.split('/')[0]
 
         self.model = keras.Model(inputs=[wmn_input], outputs=[csfn_output], name='network')
 
-    def gram_matrix(self, x, norm_by_channels=False):
-        x = K.permute_dimensions(x, (0, 3, 1, 2)) # (B, H, W, C) --> (B, C, H, W)
-        shape = K.shape(x)
-        B, C, H, W = shape[0], shape[1], shape[2], shape[3]
-        features = K.reshape(x, K.stack([B, C, H*W]))
-        gram = K.batch_dot(features, features, axes=2)
-        if norm_by_channels:
-            denominator = C * H * W # Normalization from Johnson
-        else:
-            denominator = H * W # Normalization from Google
-        gram = gram /  K.cast(denominator, x.dtype)
-        return gram
-
-    def vgg16_perceptual_loss(self, y, yhat):
-        mae = losses.mean_absolute_error(y, yhat)
-
-        y_features = vgg16_feature_extractor(K.repeat_elements(y, 3, 3))
-        yhat_features = vgg16_feature_extractor(K.repeat_elements(yhat, 3, 3))
-
-        S = self.gram_matrix(y_features)
-        C = self.gram_matrix(yhat_features)
-        perceptual = K.mean(K.square(S - C), axis=(0, 1, 2))
-
-        return mae + (self.vgg16_loss_scale * perceptual)
-
-    def perceptual_loss(self, y, yhat):
-        y_features = feature_extractor(y)
-        yhat_features = feature_extractor(yhat)
-        return K.mean(K.abs(y - yhat), axis=(1, 2, 3)) + losses.mean_squared_error(y_features, yhat_features)
-        # return K.sum(losses.mean_absolute_error(y, yhat), axis=(1, 2, 3)) + losses.mean_squared_error(y_features, yhat_features)
+    def weighted_sparse_categorical_crossentropy(self, labels, predictions):
+        losses = tf.keras.losses.sparse_categorical_crossentropy(labels, predictions, from_logits=False)
+        weights = tf.convert_to_tensor(self.weights, predictions.dtype)
+        return tf.math.divide_no_nan(tf.reduce_sum(losses * weights), tf.reduce_sum(weights))
 
     def compile(self):
         optimizer = Adam(learning_rate=self.lr)
-        loss = {self.csfn_output_name: 'mean_absolute_error'}
-        if self.use_perceptual_loss:
-            loss[self.csfn_output_name] = self.perceptual_loss
-        elif self.vgg_perceptual_loss:
-            loss[self.csfn_output_name] = self.vgg16_perceptual_loss
-        self.model.compile(optimizer=optimizer, loss=loss)
+        loss = 'sparse_categorical_crossentropy'
+        metrics = 'sparse_categorical_accuracy'
+        self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
 
     def summary(self):
-        self.model.summary()
+        self.model.summary(line_length=150)
 
-    def train(self, generator, batches_per_epoch, epochs=5, save=True):
+    def train(self, generator, batches_per_epoch, weights, epochs=5, save=True):
         start_time = datetime.now()
         history = {
             'train_loss': [],
+            'train_acc': [],
         }
 
         last_time = start_time
         for epoch in range(epochs):
             for idx, (X, y) in tqdm(enumerate(generator()), total=batches_per_epoch, dynamic_ncols=True):
-                loss = self.model.train_on_batch(X, y, reset_metrics=(idx == 0))
+                loss, acc = self.model.train_on_batch(X, y, class_weight=weights, reset_metrics=(idx == 0))
 
             now = datetime.now()
 
             total_time = now - start_time
 
             history['train_loss'].append(loss)
-            print('[Epoch {}/{}] [Loss: {}] time: {} ({}s elapsed)'.format(
+            history['train_acc'].append(acc)
+            print('[Epoch {}/{}] [Loss: {}] [Acc: {}] time: {} ({}s elapsed)'.format(
                 epoch,
                 epochs,
                 loss,
+                acc,
                 total_time,
                 round((now - last_time).total_seconds(), 2),
             ))
@@ -174,19 +149,22 @@ class SliceGenerator():
                 plt.savefig('training_graphs/generator/{}_{}_history.png'.format(self.name, name))
                 plt.clf()
 
-    def convert_from_array(self, csfn_input, batch_size=64):
-        csfn_input = normalize(csfn_input)
-        final = np.zeros(csfn_input.shape)
+    def convert_from_array(self, wmn_input, batch_size=64):
+        if self.true_output_model is None:
+            self.true_output_model = keras.Model(inputs=self.model.input, outputs=self.model.layers[-2].output)
+
+        wmn_input = normalize(wmn_input)
+        final = np.zeros(wmn_input.shape)
 
         batches = []
         ranges = []
 
         cur_batch = []
-        for i in range(0, csfn_input.shape[1] - self.input_shape[2] + 1):
+        for i in range(0, wmn_input.shape[1] - self.input_shape[2] + 1):
             if i % batch_size == 0 and len(cur_batch):
                 batches.append(cur_batch)
                 cur_batch = []
-            slab = csfn_input[:, i:i + self.input_shape[2], :]
+            slab = wmn_input[:, i:i + self.input_shape[2], :]
             slab = np.rollaxis(slab, 2)[:,:,:,None]
             cur_batch.append(slab)
         if len(cur_batch):
@@ -194,12 +172,13 @@ class SliceGenerator():
         batches = [np.array(b) for b in batches]
         idx = 0
         for batch in batches:
-            res = self.model.predict(batch)[:,:,:,0]
+            res = self.true_output_model.predict(batch).argmax(axis=-1)#[:,:,:,0]
+            # res = res.reshape(batch.shape[:3])
             res = np.rollaxis(res, 0, 2)
             res = np.swapaxes(res, 0, 2)
             final[:, idx:idx + batch.shape[0], :] = res
             idx += batch.shape[0]
-        return final
+        return invert_corrected_ids(final)
 
     def convert_from_nifti(self, nifti):
         converted = self.convert_from_array(nifti.get_fdata())
@@ -214,5 +193,5 @@ class SliceGenerator():
         return out_image
 
 if __name__ == '__main__':
-    model = Generator()
+    model = SliceSegGenerator()
     model.summary()
